@@ -1,5 +1,6 @@
 # from textwrap import dedent
 import base64
+import logging
 import os
 import shutil
 from pathlib import Path
@@ -9,6 +10,14 @@ from typing import cast
 import fasthtml.common as ft
 import folium
 
+LOG_LEVEL = os.getenv("APP_LOG_LEVEL", "INFO").upper()
+logger = logging.getLogger("app_log")
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(
+        logging.Formatter("[%(asctime)s] %(levelname)s %(name)s: %(message)s")
+    )
+    logger.addHandler(_handler)
 # --- Runtime env hardening for optional read-only deployments ---------------
 # Enable by setting environment variable READONLY_DEPLOYMENT to one of: 1, true, yes.
 READONLY_DEPLOYMENT = os.environ.get("READONLY_DEPLOYMENT", "").lower() in {
@@ -16,7 +25,7 @@ READONLY_DEPLOYMENT = os.environ.get("READONLY_DEPLOYMENT", "").lower() in {
     "true",
     "yes",
 }
-
+logger.info("App starting, READONLY_DEPLOYMENT=%s", READONLY_DEPLOYMENT)
 if READONLY_DEPLOYMENT:
     # Some hosting platforms mount the app directory read-only; only /tmp is writable.
     # Matplotlib tries to create ~/.config/matplotlib or CWD/.config on first import, so redirect.
@@ -237,6 +246,7 @@ else:
         default_hdrs=False,
         hdrs=fastapp_common_hdrs,
     )
+logger.info("App and router initialized")
 
 
 @rt("/")
