@@ -10,6 +10,9 @@ from typing import cast
 import fasthtml.common as ft
 import folium
 
+from wave_alert import CFG
+from wave_alert import run as wave_alert_run
+
 LOG_LEVEL = os.getenv("APP_LOG_LEVEL", "INFO").upper()
 logger = logging.getLogger("app_log")
 if not logger.handlers:
@@ -232,6 +235,26 @@ fastapp_common_hdrs = (
     ft.Link(rel="icon", type="image/svg+xml", href=FAVICON_DATA_URL),
     ft.Link(rel="shortcut icon", href=FAVICON_DATA_URL),
 )
+
+if SCHEDULED_TASKS := os.getenv("SCHEDULED_TASKS", ""):
+    import threading
+    from functools import partial
+
+    wave_alert_run2 = partial(wave_alert_run, limit=CFG.get("limit_locations"))
+
+    def run_scheduler():
+        import time
+
+        import schedule
+
+        TWO_DAYS = 60 * 60 * 24 * 2
+        wave_alert_run2()
+        while True:
+            schedule.every(2).days.at("16:00").do(wave_alert_run2)
+            time.sleep(TWO_DAYS)  # Check every two days
+
+    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+    scheduler_thread.start()
 
 if READONLY_DEPLOYMENT:
     app, rt = ft.fast_app(
