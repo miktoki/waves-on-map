@@ -1,5 +1,6 @@
 # from textwrap import dedent
 import base64
+import os
 import shutil
 from pathlib import Path
 from textwrap import dedent
@@ -7,21 +8,40 @@ from typing import cast
 
 import fasthtml.common as ft
 import folium
-import matplotlib.colors as mcolors
-import matplotlib.pyplot as plt
-import sqlite_minutils
-from bs4 import BeautifulSoup
-from fasthtml.common import Div, Meta  # noqa: F401
 
-from waves_on_map.assets import (
+# --- Runtime env hardening for optional read-only deployments ---------------
+# Enable by setting environment variable READONLY_DEPLOYMENT to one of: 1, true, yes.
+READONLY_DEPLOYMENT = os.environ.get("READONLY_DEPLOYMENT", "").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
+if READONLY_DEPLOYMENT:
+    # Some hosting platforms mount the app directory read-only; only /tmp is writable.
+    # Matplotlib tries to create ~/.config/matplotlib or CWD/.config on first import, so redirect.
+    MPL_DIR = Path("/tmp/mplconfig")
+    try:
+        MPL_DIR.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("MPLCONFIGDIR", str(MPL_DIR))
+    except Exception as e:  # pragma: no cover - best effort safeguard
+        print(f"[startup] Failed to prep MPLCONFIGDIR: {e}")
+
+import matplotlib.colors as mcolors  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402
+import sqlite_minutils  # noqa: E402
+from bs4 import BeautifulSoup  # noqa: E402
+from fasthtml.common import Div, Meta  # noqa: F401,E402
+
+from waves_on_map.assets import (  # noqa: E402
     FAVICON_DATA_URL,
     MAP_DARK_CSS,
     MAP_RIGHT_CLICK_SCRIPT,
     WAVE_DETAIL_DARK_CSS,
 )
-from waves_on_map.fetch_data import fetch_forecast, fetch_waves
-from waves_on_map.map import add_clickable_arrow, get_map
-from waves_on_map.models import WaveData
+from waves_on_map.fetch_data import fetch_forecast, fetch_waves  # noqa: E402
+from waves_on_map.map import add_clickable_arrow, get_map  # noqa: E402
+from waves_on_map.models import WaveData  # noqa: E402
 
 # Preload weather SVG icons into memory to avoid separate HTTP requests and 404 issues
 ICON_SVGS: dict[str, str] = {}
@@ -78,7 +98,9 @@ def build_icon_html(
     )
 
 
-if not (db_path := Path("/tmp/data/weather.db")).exists():
+if not READONLY_DEPLOYMENT:
+    db_path = Path("data/weather.db")
+elif not (db_path := Path("/tmp/data/weather.db")).exists():
     db_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(Path(__file__).resolve().parent / "data" / "weather.db", db_path)
 db = ft.database(db_path)
@@ -193,17 +215,28 @@ styles = [
     for _, href in base_map.default_css
 ]
 
-app, rt = ft.fast_app(
-    live=False,  # Disable live reload to prevent infinite reload issues
-    default_hdrs=False,
-    hdrs=(
-        *scripts,
-        *styles,
-        eval(ft.html2ft(str(base_soup.find(attrs={"name": "viewport"})))),
-        ft.Link(rel="icon", type="image/svg+xml", href=FAVICON_DATA_URL),
-        ft.Link(rel="shortcut icon", href=FAVICON_DATA_URL),
-    ),
+fastapp_common_hdrs = (
+    *scripts,
+    *styles,
+    eval(ft.html2ft(str(base_soup.find(attrs={"name": "viewport"})))),
+    ft.Link(rel="icon", type="image/svg+xml", href=FAVICON_DATA_URL),
+    ft.Link(rel="shortcut icon", href=FAVICON_DATA_URL),
 )
+
+if READONLY_DEPLOYMENT:
+    app, rt = ft.fast_app(
+        live=False,
+        default_hdrs=False,
+        hdrs=fastapp_common_hdrs,
+        secret_key=os.environ.get("APP_SECRET_KEY", "dev-insecure-key-change-me"),
+        key_fname="/tmp/.sesskey",
+    )
+else:
+    app, rt = ft.fast_app(
+        live=False,
+        default_hdrs=False,
+        hdrs=fastapp_common_hdrs,
+    )
 
 
 @rt("/")
