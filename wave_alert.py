@@ -55,6 +55,103 @@ def load_config():
     return cfg
 
 
+def _parse_opening_hours(spec: str) -> Callable[[datetime], bool]:
+    """Return callable(dt) -> bool implementing a minimal subset of OSM opening_hours.
+
+    Supported forms:
+      - 24/7
+      - Day ranges & lists: Mo-Fr, Sa-Su, Mo,We,Fr
+      - Multiple rules separated by ';'
+      - Time ranges per rule: HH:MM-HH:MM[,HH:MM-HH:MM...]
+      - 'off' to mark days closed
+    Unspecified days default to closed (unless 24/7).
+    """
+    spec = spec.strip()
+    if not spec:
+        return lambda x: True
+
+    days_map: dict[int, list[tuple[int, int]]] = {i: [] for i in range(7)}  # 0=Mon
+    if spec.lower() == "24/7":
+        for i in range(7):
+            days_map[i] = [(0, 24 * 60)]
+
+        def always(dt):
+            return True
+
+        return always
+    DAY_IDX = {k: i for i, k in enumerate(["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"])}
+    import re
+
+    rule_sep = [r.strip() for r in spec.split(";") if r.strip()]
+    time_pat = re.compile(r"(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})")
+    for rule in rule_sep:
+        # Split day part and times
+        parts = rule.split()
+        if not parts:
+            continue
+        # Detect if first token has a digit -> implies no day spec (apply all days)
+        if any(ch.isdigit() for ch in parts[0]):
+            day_tokens = ["ALL"]
+            time_tokens = parts
+        else:
+            day_tokens = parts[0].split(",")
+            time_tokens = parts[1:] if len(parts) > 1 else []
+        # Expand days
+        days: list[int] = []
+        for tok in day_tokens:
+            tok = tok.strip()
+            if tok == "ALL":
+                days = list(range(7))
+                break
+            if "-" in tok:
+                a, b = tok.split("-", 1)
+                if a in DAY_IDX and b in DAY_IDX:
+                    ai, bi = DAY_IDX[a], DAY_IDX[b]
+                    if ai <= bi:
+                        days.extend(range(ai, bi + 1))
+                    else:  # wrap (unlikely in typical usage)
+                        days.extend(list(range(ai, 7)) + list(range(0, bi + 1)))
+            elif tok in DAY_IDX:
+                days.append(DAY_IDX[tok])
+        if not days:
+            days = list(range(7))  # fallback
+        # If 'off' present => clear entries for these days
+        if any(t.lower() == "off" for t in time_tokens):
+            for d in days:
+                days_map[d] = []
+            continue
+        # Parse time ranges
+        # Join remaining tokens with comma to allow both space and comma separation
+        joined = ",".join(time_tokens)
+        for m in time_pat.finditer(joined):
+            h1, m1, h2, m2 = map(int, m.groups())
+            start = h1 * 60 + m1
+            end = h2 * 60 + m2
+            if 0 <= start < 24 * 60 and 0 <= end <= 24 * 60 and start < end:
+                for d in days:
+                    days_map[d].append((start, end))
+    # Normalize (merge overlapping) - simple sort
+    for d in days_map:
+        rngs = sorted(days_map[d])
+        merged: list[tuple[int, int]] = []
+        for s, e in rngs:
+            if not merged or s > merged[-1][1]:
+                merged.append((s, e))
+            else:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        days_map[d] = merged
+
+    def is_open(dt):
+        day = dt.weekday()
+        minute = dt.hour * 60 + dt.minute
+        for s, e in days_map[day]:
+            if s <= minute < e:
+                return True
+        return False
+
+    return is_open
+
+
 CFG = load_config()
 WAVE_THRESHOLD = float(CFG.get("wave_threshold", 0.5))
 OPENING_HOURS_SPEC = CFG.get("opening_hours", "")
@@ -247,6 +344,7 @@ def process_location(loc_id: int, lat: float, lon: float, name: str):
         for i, w in enumerate(wave_list)
         if IS_OPEN(to_oslo(w.time)) and w.sea_surface_wave_height >= WAVE_THRESHOLD  # type: ignore
     ]
+
     if not exceed_indices:
         return None
 

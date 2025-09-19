@@ -1,4 +1,7 @@
 __pycache__/
 alert_config.toml
-local_setup.sh
 uv.lock
+.sesskey
+.vscode/*
+*.code-workspace
+setup_local.sh
