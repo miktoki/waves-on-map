@@ -23,3 +23,8 @@ requires = ["uv_build>=0.8.17,<0.9.0"]
 build-backend = "uv_build"
 [tool.uv.build-backend]
 module-name = "waves_on_map"
+
+[dependency-groups]
+dev = [
+    "pip-tools>=7.5.0",
+]

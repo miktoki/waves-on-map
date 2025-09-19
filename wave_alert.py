@@ -1,29 +1,20 @@
 """Wave & weather alert script.
 
-Aggregates all wave exceedances (wave height >= threshold AND within opening_hours) across all
-locations in a single email per run. For every exceedance, a ±3h window of wave data is included;
-overlapping windows are merged so that each wave time appears at most once. A nearest matching
-weather record is attached per selected wave time (also deduplicated). If no exceedances occur,
-no email is sent.
+Configuration now comes exclusively from environment variables:
 
-Configuration: provided via `alert_config.toml` (override path with ALERT_CONFIG env var).
-Example keys:
-    wave_threshold = 0.5
-    opening_hours = "Mo-Fr 05:00-17:00; Sa-Su 07:00-12:00"  # or "24/7"
-    limit_locations = 5  # optional
-    [smtp]
-    host = "smtp.gmail.com"
-    port = 587
-    user = "me@example.com"
-    pass = "app_password"
-    to   = "recipient@example.com"   # optional (defaults to user)
-    from = "alerts@example.com"      # optional
+  WAVE_THRESHOLD      (float, default 0.5)
+  OPENING_HOURS       (string like: "Mo-Fr 05:00-17:00; Sa-Su 07:00-12:00" or "24/7")
+  LIMIT_LOCATIONS     (int, optional)
+
+  SMTP_HOST           (default smtp.gmail.com)
+  SMTP_PORT           (default 587)
+  SMTP_USER
+  SMTP_PASS
+  SMTP_TO             (optional, default = SMTP_USER)
+  SMTP_FROM           (optional, default = SMTP_USER)
 
 Usage:
-    python wave_alert.py
-
-Email Subject format:
-    Wave Alerts · <N locations> · <M exceedances> (Threshold >= X.Ym)
+    WAVE_THRESHOLD=0.7 OPENING_HOURS="24/7" python wave_alert.py
 """
 
 from __future__ import annotations
@@ -40,147 +31,32 @@ from pathlib import Path
 from typing import List, Tuple
 from zoneinfo import ZoneInfo
 
-import tomli
-
 from waves_on_map.fetch_data import fetch_forecast, fetch_waves
-
-CONFIG_PATH = Path(os.getenv("ALERT_CONFIG", "alert_config.toml"))
 
 
 def load_config():
-    base = {
-        "wave_threshold": 0.5,
-        # OSM-style opening hours spec, e.g. "Mo-Fr 05:00-17:00; Sa-Su 07:00-12:00" or "24/7"
-        "opening_hours": None,
+    def _int(name):
+        v = os.getenv(name)
+        return int(v) if v and v.isdigit() else None
+
+    cfg = {
+        "wave_threshold": float(os.getenv("WAVE_THRESHOLD", "0.5")),
+        "opening_hours": os.getenv("OPENING_HOURS", "24/7"),
+        "limit_locations": _int("LIMIT_LOCATIONS"),
         "smtp": {
-            "host": "smtp.gmail.com",
-            "port": 587,
-            "user": None,
-            "pass": None,
-            "to": None,
-            "from": None,
+            "host": os.getenv("SMTP_HOST", "smtp.gmail.com"),
+            "port": int(os.getenv("SMTP_PORT", "587")),
+            "user": os.getenv("SMTP_USER"),
+            "pass": os.getenv("SMTP_PASS"),
+            "to": os.getenv("SMTP_TO"),
+            "from": os.getenv("SMTP_FROM"),
         },
-        "limit_locations": None,
     }
-    if CONFIG_PATH.exists():
-        try:
-            with CONFIG_PATH.open("rb") as f:
-                data = tomli.load(f)
-            # shallow merge
-            for k, v in data.items():
-                if k == "smtp" and isinstance(v, dict):
-                    base["smtp"].update(v)
-                else:
-                    base[k] = v
-        except Exception as e:  # pragma: no cover
-            print(f"[alert] Failed to load config {CONFIG_PATH}: {e}; using defaults")
-    else:
-        print(f"[alert] Config file not found: {CONFIG_PATH}; using defaults")
-    return base
+    return cfg
 
 
 CFG = load_config()
-
 WAVE_THRESHOLD = float(CFG.get("wave_threshold", 0.5))
-
-
-def _parse_opening_hours(spec: str) -> Callable[[datetime], bool]:
-    """Return callable(dt) -> bool implementing a minimal subset of OSM opening_hours.
-
-    Supported forms:
-      - 24/7
-      - Day ranges & lists: Mo-Fr, Sa-Su, Mo,We,Fr
-      - Multiple rules separated by ';'
-      - Time ranges per rule: HH:MM-HH:MM[,HH:MM-HH:MM...]
-      - 'off' to mark days closed
-    Unspecified days default to closed (unless 24/7).
-    """
-    spec = spec.strip()
-    if not spec:
-        return lambda x: True
-
-    days_map: dict[int, list[tuple[int, int]]] = {i: [] for i in range(7)}  # 0=Mon
-    if spec.lower() == "24/7":
-        for i in range(7):
-            days_map[i] = [(0, 24 * 60)]
-
-        def always(dt):
-            return True
-
-        return always
-    DAY_IDX = {k: i for i, k in enumerate(["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"])}
-    import re
-
-    rule_sep = [r.strip() for r in spec.split(";") if r.strip()]
-    time_pat = re.compile(r"(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})")
-    for rule in rule_sep:
-        # Split day part and times
-        parts = rule.split()
-        if not parts:
-            continue
-        # Detect if first token has a digit -> implies no day spec (apply all days)
-        if any(ch.isdigit() for ch in parts[0]):
-            day_tokens = ["ALL"]
-            time_tokens = parts
-        else:
-            day_tokens = parts[0].split(",")
-            time_tokens = parts[1:] if len(parts) > 1 else []
-        # Expand days
-        days: list[int] = []
-        for tok in day_tokens:
-            tok = tok.strip()
-            if tok == "ALL":
-                days = list(range(7))
-                break
-            if "-" in tok:
-                a, b = tok.split("-", 1)
-                if a in DAY_IDX and b in DAY_IDX:
-                    ai, bi = DAY_IDX[a], DAY_IDX[b]
-                    if ai <= bi:
-                        days.extend(range(ai, bi + 1))
-                    else:  # wrap (unlikely in typical usage)
-                        days.extend(list(range(ai, 7)) + list(range(0, bi + 1)))
-            elif tok in DAY_IDX:
-                days.append(DAY_IDX[tok])
-        if not days:
-            days = list(range(7))  # fallback
-        # If 'off' present => clear entries for these days
-        if any(t.lower() == "off" for t in time_tokens):
-            for d in days:
-                days_map[d] = []
-            continue
-        # Parse time ranges
-        # Join remaining tokens with comma to allow both space and comma separation
-        joined = ",".join(time_tokens)
-        for m in time_pat.finditer(joined):
-            h1, m1, h2, m2 = map(int, m.groups())
-            start = h1 * 60 + m1
-            end = h2 * 60 + m2
-            if 0 <= start < 24 * 60 and 0 <= end <= 24 * 60 and start < end:
-                for d in days:
-                    days_map[d].append((start, end))
-    # Normalize (merge overlapping) - simple sort
-    for d in days_map:
-        rngs = sorted(days_map[d])
-        merged: list[tuple[int, int]] = []
-        for s, e in rngs:
-            if not merged or s > merged[-1][1]:
-                merged.append((s, e))
-            else:
-                merged[-1] = (merged[-1][0], max(merged[-1][1], e))
-        days_map[d] = merged
-
-    def is_open(dt):
-        day = dt.weekday()
-        minute = dt.hour * 60 + dt.minute
-        for s, e in days_map[day]:
-            if s <= minute < e:
-                return True
-        return False
-
-    return is_open
-
-
 OPENING_HOURS_SPEC = CFG.get("opening_hours", "")
 IS_OPEN: Callable[[datetime], bool] = _parse_opening_hours(OPENING_HOURS_SPEC)
 UTC = timezone.utc
@@ -458,6 +334,5 @@ def run(limit: int | None = None):
 
 
 if __name__ == "__main__":
-    limit_cfg = CFG.get("limit_locations")
-    limit = int(limit_cfg) if isinstance(limit_cfg, int) else None
+    limit = CFG.get("limit_locations")
     run(limit=limit)
