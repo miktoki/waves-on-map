@@ -1,5 +1,6 @@
 # from textwrap import dedent
 import base64
+import shutil
 from pathlib import Path
 from textwrap import dedent
 from typing import cast
@@ -77,7 +78,10 @@ def build_icon_html(
     )
 
 
-db = ft.database("data/weather.db")
+if not (db_path := Path("/tmp/data/weather.db")).exists():
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(Path(__file__).resolve().parent / "data" / "weather.db", db_path)
+db = ft.database(db_path)
 waves: sqlite_minutils.Table = db.t.waves_highlights
 locs: sqlite_minutils.Table = db.t.locations
 # sqlite_minutils.python_a
