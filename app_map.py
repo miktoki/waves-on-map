@@ -155,7 +155,15 @@ def setup_map() -> folium.Map:
     return m
 
 
-m = setup_map()
+@app.get("/")
+async def root():
+    try:
+        m = setup_map()  # Call it here when needed
+        return {"map": m}
+    except Exception as e:
+        return {"error": "Unable to fetch weather data", "details": str(e)}
+
+
 html = cast(str, m.get_root().render())
 soup = BeautifulSoup(html, "html.parser")
 scripts = [ft.Script(src=src) for _, src in m.default_js]
