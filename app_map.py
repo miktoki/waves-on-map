@@ -1,6 +1,7 @@
 # from textwrap import dedent
 import base64
 from pathlib import Path
+from textwrap import dedent
 from typing import cast
 
 import fasthtml.common as ft
@@ -41,6 +42,41 @@ try:
 except Exception as e:  # pragma: no cover
     print(f"[icons] preload error: {e}")
 
+
+def build_metrics_badge(wind_sup: str, wave_sub: str) -> str:
+    return dedent(
+        f"""
+                <span style='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);display:flex;flex-direction:column;gap:6px;width:40px;pointer-events:none;z-index:2;'>
+                    <span style='display:flex;width:40px;align-items:center;justify-content:space-between;font-size:0.9rem;font-weight:700;color:#d4f4ff;letter-spacing:-.3px;text-shadow:0 0 4px rgba(0,0,0,.85);'>
+                        <span>💨</span><span style='margin-left:auto;'>{wind_sup}</span>
+                    </span>
+                    <span style='display:flex;width:40px;align-items:center;justify-content:space-between;font-size:0.85rem;font-weight:600;color:#9edbff;letter-spacing:-.3px;text-shadow:0 0 4px rgba(0,0,0,.85);'>
+                        <span>🌊</span><span style='margin-left:auto;'>{wave_sub}</span>
+                    </span>
+                </span>
+                """.strip()
+    )
+
+
+def build_icon_html(
+    rotation: float, metrics_badge: str, days_ahead: int | None = None
+) -> str:
+    if days_ahead is None:
+        days_ahead = 0
+    day_label = f"<div style='position:absolute;left:50%;bottom:2px;transform:translate(-50%,0);font-size:.55rem;font-weight:600;color:#ffd1d1;background:rgba(40,8,10,.85);padding:2px 5px 2px;border:1px solid #ff6d6d;border-radius:8px;line-height:1;letter-spacing:.4px;box-shadow:0 2px 5px -2px rgba(0,0,0,.65);font-family:system-ui,sans-serif;pointer-events:none;'>+{days_ahead}</div>"
+    return dedent(
+        f"""
+                <div style='position:relative;pointer-events:auto;font-family:system-ui,sans-serif;'>
+                    <div style='width:60px;height:60px;position:relative;padding:4px;background:#2a0e11;background:radial-gradient(circle at 42% 34%,rgba(255,120,120,.55),rgba(40,8,10,.94));border:2px solid #ff6d6d;border-radius:50%;box-shadow:0 3px 10px -4px rgba(0,0,0,.85),0 0 0 1px rgba(255,120,120,.45);overflow:hidden;box-sizing:border-box;'>
+                        <div style='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate({rotation}deg);font-size:30px;line-height:1;color:#ff4d4d;filter:drop-shadow(0 0 5px rgba(0,0,0,.95));font-weight:800;text-shadow:0 0 7px rgba(255,120,120,.65);'>↑</div>
+                        {metrics_badge}
+                        {day_label}
+                    </div>
+                </div>
+                """.strip()
+    )
+
+
 db = ft.database("data/weather.db")
 waves: sqlite_minutils.Table = db.t.waves_highlights
 locs: sqlite_minutils.Table = db.t.locations
@@ -75,10 +111,7 @@ def value_to_hex(x, a, b, cmap_name="viridis"):
     return mcolors.rgb2hex(rgb)
 
 
-def setup_map() -> folium.Map:
-    """Create folium map with right-click functionality to add coordinates."""
-    m = get_map()
-
+def insert_wave_data(m: folium.Map):
     if not locs.count:
         loc = dict(latitude=59.8739721, longitude=10.7449325, id=1, name="Malmøya-nord")
         locs.insert(loc)
@@ -95,8 +128,8 @@ def setup_map() -> folium.Map:
         max_wave_h = wd.sea_surface_wave_height
         wind_sup = (
             f"{f_max.wind_speed:.1f}" if f_max.wind_speed == f_max.wind_speed else "?"
-        )  # NaN check
-        wave_sub = str(int(round(max_wave_h * 10))) if max_wave_h == max_wave_h else "?"
+        )
+        wave_sub = str(round(max_wave_h, 1)) if max_wave_h == max_wave_h else "?"
 
         # Persist (or reuse) a highlight wave record for this location so we have a stable PK
         existing_wave = None
@@ -123,61 +156,46 @@ def setup_map() -> folium.Map:
         else:
             wave_id = existing_wave["id"]
 
-        # Compose arrow popup with superscript (max wind speed) and subscript (scaled wave height)
-        # Two separate absolutely-positioned spans (superscript top-right, subscript bottom-left)
-        metrics_badge = (
-            f"<span style='position:absolute;top:50%;left:50%;transform:translate(8px,-50%);display:flex;flex-direction:column;align-items:flex-start;justify-content:center;line-height:1;pointer-events:none;'>"
-            f"<span style='font-size:1.28rem;font-weight:800;color:#d4f4ff;letter-spacing:-.6px;text-shadow:0 0 5px rgba(0,0,0,.9),0 0 10px rgba(255,120,120,.35);margin-bottom:8px;'>{wind_sup}</span>"
-            f"<span style='font-size:1.18rem;font-weight:700;color:#9edbff;letter-spacing:-.5px;text-shadow:0 0 5px rgba(0,0,0,.85),0 0 8px rgba(120,180,255,.35);'>{wave_sub}</span>"
-            f"</span>"
-        )
+        # Compose arrow popup with metrics badge
+        metrics_badge = build_metrics_badge(wind_sup, wave_sub)
+        from datetime import datetime
 
+        days_ahead = (wd.time.date() - datetime.utcnow().date()).days
+        metrics_badge += f"<span style='position:absolute;left:50%;bottom:2px;transform:translate(-50%,0);font-size:0.9rem;font-weight:600;color:#ffd1d1;line-height:1;letter-spacing:.4px;pointer-events:none;'>+{days_ahead}</span>"
         add_clickable_arrow(
             m,
             lat,
             lon,
             rotation=(180 + wd.sea_surface_wave_from_direction) % 360,
-            popup_text=(
-                f"{lat:.2f} {lon:.2f}<br>"
-                + "<br>".join(f"{k}: {v}" for k, v in wd.compact.items())
-                + f"<br><a href='/{wave_id}' style='color:#66b3ff;text-decoration:underline;'>Details ➜</a>"
+            popup_text=dedent(
+                f"""
+                {lat:.2f} {lon:.2f}<br>
+                {"<br>".join(f"{k}: {v}" for k, v in wd.compact.items())}<br>
+                <a href='/{wave_id}' style='color:#66b3ff;text-decoration:underline;'>Details ➜</a>
+                """.strip()
             ),
             metrics_html=metrics_badge,
         )
 
-    # Add basic right-click event listener (kept minimal since enhanced version runs in FastHTML route)
-    # (We intentionally defer heavy logic until after page load to ensure map variable is available)
-    basic_inline = """
-    <script>document.addEventListener('DOMContentLoaded',()=>{try{const m=document.querySelector('.folium-map')._leaflet_map;m.on('contextmenu',e=>{const lat=e.latlng.lat;const lng=e.latlng.lng;const name=prompt('Enter location name:');if(name){fetch('/add_location',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({latitude:lat,longitude:lng,name:name})}).then(r=>{if(r.ok)alert('Location added successfully!');else alert('Failed to add location.');});}});}catch(_){}});</script>
-    """
-    m.get_root().html.add_child(folium.Element(basic_inline))
 
-    return m
-
-
-@app.get("/")
-async def root():
-    try:
-        m = setup_map()  # Call it here when needed
-        return {"map": m}
-    except Exception as e:
-        return {"error": "Unable to fetch weather data", "details": str(e)}
-
-
-html = cast(str, m.get_root().render())
-soup = BeautifulSoup(html, "html.parser")
-scripts = [ft.Script(src=src) for _, src in m.default_js]
+# Create a base map for extracting static resources
+base_map = get_map()
+base_html = cast(str, base_map.get_root().render())
+base_soup = BeautifulSoup(base_html, "html.parser")
+scripts = [ft.Script(src=src) for _, src in base_map.default_js]
+# Only include external CSS here; defer folium-generated <style> (map id specific) to request time
 styles = [
-    ft.Link(rel="stylesheet", href=href, type="text/css") for _, href in m.default_css
-] + [ft.Style(s.contents[0].strip()) for s in soup.find_all("style")]  # type: ignore
+    ft.Link(rel="stylesheet", href=href, type="text/css")
+    for _, href in base_map.default_css
+]
 
 app, rt = ft.fast_app(
-    live=True,
+    live=False,  # Disable live reload to prevent infinite reload issues
     default_hdrs=False,
     hdrs=(
         *scripts,
         *styles,
-        eval(ft.html2ft(str(soup.find(attrs={"name": "viewport"})))),
+        eval(ft.html2ft(str(base_soup.find(attrs={"name": "viewport"})))),
         ft.Link(rel="icon", type="image/svg+xml", href=FAVICON_DATA_URL),
         ft.Link(rel="shortcut icon", href=FAVICON_DATA_URL),
     ),
@@ -186,8 +204,23 @@ app, rt = ft.fast_app(
 
 @rt("/")
 def get():
+    # Create a fresh map for each request with all current data
+    m = setup_map()
+    insert_wave_data(m)
+
+    # Render the map with all markers
+    html = cast(str, m.get_root().render())
+    soup = BeautifulSoup(html, "html.parser")
     folium_map_div = soup.find("div", class_="folium-map")
     ft_map_div = ft.html2ft(str(folium_map_div))
+    dynamic_styles: list = []  # type: ignore[var-annotated]
+    for s in soup.find_all("style"):
+        try:
+            txt = s.get_text("", strip=True)
+            if txt:
+                dynamic_styles.append(ft.Style(txt))  # type: ignore[arg-type]
+        except Exception:
+            pass
 
     # Extract the map ID from the div
     map_id: str = folium_map_div.get("id")  # type: ignore
@@ -202,6 +235,7 @@ def get():
     return (
         ft.Title("Map waves++"),
         dark_css,
+        *dynamic_styles,
         eval(ft_map_div),
         ft.Script(code=str(soup.find_all("script")[-1].contents[0].strip())),  # type: ignore
         ft.Script(code=right_click_script),
@@ -298,24 +332,35 @@ def post(data: dict):
             wave_sub = (
                 str(int(round(max_wave_h * 10))) if max_wave_h == max_wave_h else "?"
             )
-            metrics_badge = (
-                "<span style='position:absolute;top:50%;left:50%;transform:translate(8px,-50%);display:flex;flex-direction:column;align-items:flex-start;justify-content:center;line-height:1;pointer-events:none;'>"
-                + "<span style='font-size:1.28rem;font-weight:800;color:#d4f4ff;letter-spacing:-.6px;text-shadow:0 0 5px rgba(0,0,0,.9),0 0 10px rgba(255,120,120,.35);margin-bottom:8px;'>"
-                + wind_sup
-                + "</span><span style='font-size:1.18rem;font-weight:700;color:#9edbff;letter-spacing:-.5px;text-shadow:0 0 5px rgba(0,0,0,.85),0 0 8px rgba(120,180,255,.35);'>"
-                + wave_sub
-                + "</span></span>"
+
+            # Store wave data in database to get a wave_id for the Details link
+            wave_id = waves.count + 1
+            waves.insert(
+                {
+                    "id": wave_id,
+                    "loc_id": next_id,
+                    "sea_surface_wave_from_direction": wd.sea_surface_wave_from_direction,
+                    "sea_surface_wave_height": wd.sea_surface_wave_height,
+                    "sea_water_speed": wd.sea_water_speed,
+                    "sea_water_temperature": wd.sea_water_temperature,
+                    "sea_water_to_direction": wd.sea_water_to_direction,
+                    "time": wd.time,
+                }
             )
+
+            metrics_badge = build_metrics_badge(wind_sup, wave_sub)
             rotation = (180 + wd.sea_surface_wave_from_direction) % 360
-            icon_html = f"""
-<div style='position:relative;pointer-events:auto;font-family:system-ui,sans-serif;'>
-  <div style='width:60px;height:60px;position:relative;padding:4px;background:#2a0e11;background:radial-gradient(circle at 42% 34%,rgba(255,120,120,.55),rgba(40,8,10,.94));border:2px solid #ff6d6d;border-radius:50%;box-shadow:0 3px 10px -4px rgba(0,0,0,.85),0 0 0 1px rgba(255,120,120,.45);overflow:hidden;box-sizing:border-box;'>
-    <div style='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate({rotation}deg);font-size:30px;line-height:1;color:#ff4d4d;filter:drop-shadow(0 0 5px rgba(0,0,0,.95));font-weight:800;text-shadow:0 0 7px rgba(255,120,120,.65);'>↑</div>
-    {metrics_badge}
-  </div>
-</div>
-""".strip()
-            popup_html = f"<div style='font:12px/1.3 system-ui,sans-serif;color:#e6edf3;'><b>Arrow Details</b><br>Rotation: {rotation:.0f}°<br>{latitude:.2f} {longitude:.2f}<br>New location: {name}</div>"
+            from datetime import datetime
+
+            days_ahead = (wd.time.date() - datetime.utcnow().date()).days
+            icon_html = build_icon_html(rotation, metrics_badge, days_ahead)
+            popup_html = dedent(
+                f"""
+                {latitude:.2f} {longitude:.2f}<br>
+                {"<br>".join(f"{k}: {v}" for k, v in wd.compact.items())}<br>
+                <a href='/{wave_id}' style='color:#66b3ff;text-decoration:underline;'>Details ➜</a>
+                """.strip()
+            )
             marker_payload = dict(
                 lat=latitude,
                 lon=longitude,

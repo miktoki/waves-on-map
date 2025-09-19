@@ -120,32 +120,6 @@ table.db-table tbody tr:hover td { background:#254355; color:#ffffff; }
 @media (max-width:800px){ ul.tables { grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); } table.db-table th, table.db-table td { padding:4px 6px; } }
 """.strip()
 
-# --- JavaScript: map right-click (simple used during map build via folium) ---
-MAP_FOLIUM_INLINE_RIGHT_CLICK = """
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-    const map = document.querySelector('.folium-map')._leaflet_map;
-    map.on('contextmenu', function(e) {
-        const lat = e.latlng.lat;
-        const lng = e.latlng.lng;
-        const name = prompt("Enter location name:");
-        if (name) {
-            fetch('/add_location', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ latitude: lat, longitude: lng, name: name })
-            }).then(response => {
-                if (response.ok) {
-                    alert("Location added successfully!");
-                } else {
-                    alert("Failed to add location.");
-                }
-            });
-        }
-    });
-});
-</script>
-""".strip()
 
 # --- JavaScript: enhanced right-click logic used in FastHTML root route ---
 MAP_RIGHT_CLICK_SCRIPT = """

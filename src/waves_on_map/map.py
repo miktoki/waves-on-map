@@ -18,15 +18,7 @@ def get_map():
         tiles="CartoDB dark_matter",
         attr="© OpenStreetMap contributors © CartoDB",
     )
-    # m = add_json_lines(m, Path("data/Kommuner-L-Oslo-Nesodden.topojson"))
     return m
-    # folium.TileLayer(
-    #     tiles=dark_url,
-    #     attr="© OpenStreetMap © CartoDB",
-    #     name="CartoDB Dark All",
-    #     overlay=False,
-    #     control=True,
-    # ).add_to(m)
 
 
 def add_json_lines(m, path: Path):
@@ -68,10 +60,10 @@ def add_clickable_arrow(
     if metrics_html:
         html = f"""
 <div style='position:relative;pointer-events:auto;font-family:system-ui,sans-serif;'>
-                    <div style='width:60px;height:60px;position:relative;padding:4px;background:#2a0e11;background:radial-gradient(circle at 42% 34%,rgba(255,120,120,.55),rgba(40,8,10,.94));border:2px solid #ff6d6d;border-radius:50%;box-shadow:0 3px 10px -4px rgba(0,0,0,.85),0 0 0 1px rgba(255,120,120,.45);overflow:hidden;box-sizing:border-box;'>
-                        <div style='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate({rotation}deg);font-size:30px;line-height:1;color:{color};filter:drop-shadow(0 0 5px rgba(0,0,0,.95));font-weight:800;text-shadow:0 0 7px rgba(255,120,120,.65);'>↑</div>
-                        {metrics_html}
-                    </div>
+    <div style='width:60px;height:60px;position:relative;padding:4px;background:#2a0e11;background:radial-gradient(circle at 42% 34%,rgba(255,120,120,.55),rgba(40,8,10,.94));border:2px solid #ff6d6d;border-radius:50%;box-shadow:0 3px 10px -4px rgba(0,0,0,.85),0 0 0 1px rgba(255,120,120,.45);overflow:hidden;box-sizing:border-box;'>
+        <div style='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate({rotation}deg);font-size:30px;line-height:1;color:{color};filter:drop-shadow(0 0 5px rgba(0,0,0,.95));font-weight:800;text-shadow:0 0 7px rgba(255,120,120,.65);'>↑</div>
+        {metrics_html}
+    </div>
 </div>
 """.strip()
         icon = folium.DivIcon(html=html)
