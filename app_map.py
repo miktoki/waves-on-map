@@ -111,7 +111,8 @@ if not READONLY_DEPLOYMENT:
     db_path = Path("data/weather.db")
 elif not (db_path := Path("/tmp/data/weather.db")).exists():
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy(Path(__file__).resolve().parent / "data" / "weather.db", db_path)
+    for p in db_path.parent.glob(f"{db_path.name}*"):
+        shutil.copy(p, db_path.parent)
 db = ft.database(db_path)
 waves: sqlite_minutils.Table = db.t.waves_highlights
 locs: sqlite_minutils.Table = db.t.locations
