@@ -205,11 +205,10 @@ app, rt = ft.fast_app(
 @rt("/")
 def get():
     # Create a fresh map for each request with all current data
-    m = setup_map()
-    insert_wave_data(m)
+    insert_wave_data(base_map)
 
     # Render the map with all markers
-    html = cast(str, m.get_root().render())
+    html = cast(str, base_map.get_root().render())
     soup = BeautifulSoup(html, "html.parser")
     folium_map_div = soup.find("div", class_="folium-map")
     ft_map_div = ft.html2ft(str(folium_map_div))
@@ -439,7 +438,12 @@ def wave_detail(wave_id: int):
     def wave_arrow_cell(deg: float, label: str):
         return ft.Span(
             "↑",
-            style=f"display:inline-block;transform:rotate({(deg + 180) % 360}deg);filter:drop-shadow(0 0 4px #000);font-weight:700;",
+            cls="arrow",
+            style=(
+                f"display:inline-block;transform:rotate({(deg + 180) % 360}deg);"
+                "filter:drop-shadow(0 0 4px #000);font-weight:700;"
+                "font-size:20px;line-height:1;color:#f8fbff;"
+            ),
             title=f"{label} {deg:.0f}°",
         )
 
@@ -460,7 +464,12 @@ def wave_detail(wave_id: int):
     def wind_arrow_cell(deg: float):
         return ft.Span(
             "↑",
-            style=f"display:inline-block;transform:rotate({(deg + 180) % 360}deg);font-weight:700;filter:drop-shadow(0 0 4px #000);",
+            cls="arrow",
+            style=(
+                f"display:inline-block;transform:rotate({(deg + 180) % 360}deg);"
+                "font-weight:700;filter:drop-shadow(0 0 4px #000);"
+                "font-size:20px;line-height:1;color:#f8fbff;"
+            ),
             title=f"wind from {deg:.0f}°",
         )
 
@@ -540,7 +549,47 @@ def wave_detail(wave_id: int):
         cls="waves-table combined",
     )
 
+    table_scaling_css = ft.Style(
+        """
+        .waves-table.combined { border-collapse:separate; }
+        .waves-table.combined th { font-size:.70rem; }
+        .waves-table.combined td { font-size:.83rem; }
+        .waves-table.combined td:nth-child(3),
+        .waves-table.combined td:nth-child(4),
+        .waves-table.combined td:nth-child(10) { text-align:center; width:48px; }
+        .waves-table.combined td .arrow { font-size:20px; }
+        @media (max-width:880px){
+            .waves-table.combined td { font-size:.74rem; }
+            .waves-table.combined td .arrow { font-size:18px; }
+        }
+        """
+    )
+
     dark_css = ft.Style(WAVE_DETAIL_DARK_CSS)
+    # Additional contrast overrides for dark theme legibility
+    contrast_fix_css = ft.Style(
+        """
+        /* Accessibility / contrast fixes for wave detail view */
+        .meta { color:#cfe9f7 !important; opacity:.95; }
+        .meta span, .meta p { color:#cfe9f7 !important; }
+        .grid { display:grid; gap:.85rem; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); margin:1.1rem 0 1.35rem; }
+        .grid .card { background:#13232d; border:1px solid #224054; border-radius:12px; padding:.65rem .7rem .55rem; box-shadow:0 2px 4px -2px rgba(0,0,0,.55),0 0 0 1px rgba(120,200,255,.08); }
+        .grid .card h3 { margin:0 0 .35rem; font-size:.62rem; text-transform:uppercase; letter-spacing:.55px; font-weight:600; color:#8fd1ff; opacity:.95; }
+        .grid .card p { margin:0; font-size:.95rem; font-weight:600; letter-spacing:.3px; color:#f4fbff; text-shadow:0 0 4px rgba(0,0,0,.55); }
+        h2, h1, h2 span, h2 strong { color:#e7f5ff !important; }
+        h2 { letter-spacing:.5px; }
+        a.back { color:#89d2ff !important; }
+        a.back:hover { color:#b4e5ff !important; }
+        .waves-table.combined th, .waves-table.combined td { color:#eef9ff; }
+        .waves-table.combined td .arrow { color:#f8fbff; }
+        footer.meta, .meta:last-of-type { color:#b8d7e6 !important; }
+        @media (max-width:820px){
+            .grid { gap:.65rem; }
+            .grid .card { padding:.55rem .55rem .5rem; }
+            .grid .card p { font-size:.9rem; }
+        }
+        """
+    )
 
     latest = wi.data[0]
     summary_cards = ft.Div(
@@ -575,6 +624,8 @@ def wave_detail(wave_id: int):
     return (
         ft.Title(f"Waves · {name}"),
         dark_css,
+        contrast_fix_css,
+        table_scaling_css,
         ft.A("← Back to map", href="/", cls="back"),
         ft.H1(f"Wave forecast - {name}"),
         ft.Div(

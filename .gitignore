@@ -1,1 +1,4 @@
 __pycache__/
+alert_config.toml
+local_setup.sh
+uv.lock
