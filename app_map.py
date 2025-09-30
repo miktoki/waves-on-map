@@ -47,7 +47,7 @@ from bs4 import BeautifulSoup  # noqa: E402
 from fasthtml.common import Div, Meta  # noqa: F401,E402
 
 from waves_on_map.fetch_data import fetch_forecast, fetch_waves  # noqa: E402
-from waves_on_map.hex_utils import hex_luminance  # noqa: E402
+from waves_on_map.hex_utils import blend_hex, hex_luminance, value_to_hex  # noqa: E402
 from waves_on_map.html_assets import (  # noqa: E402
     FAVICON_DATA_URL,
     MAP_DARK_CSS,
@@ -137,49 +137,6 @@ if waves not in db.t:
         pk="id",
         foreign_keys=[("loc_id", "locations")],
     )
-
-
-# TODO: move me
-def value_to_hex(x, a, b, cmap_name="viridis"):
-    # Normalize value to range [0,1]
-    norm = (x - a) / (b - a)
-    norm = max(0, min(1, norm))  # Clip values outside [a, b]
-
-    # Get colormap
-    cmap = plt.get_cmap(cmap_name)  # type: ignore
-
-    # Convert to RGB
-    rgb = cmap(norm)[:3]  # Ignore alpha if present
-
-    # Convert to HEX
-    return mcolors.rgb2hex(rgb)
-
-
-def blend_hex(base_hex: str, overlay_hex: str, alpha: float) -> str:
-    """Blend overlay_hex onto base_hex with given alpha (0..1) and return hex.
-
-    Uses simple linear interpolation per channel and returns a 6-char hex.
-    """
-    if not base_hex:
-        base_hex = "#000000"
-    if not overlay_hex:
-        overlay_hex = "#000000"
-    b = base_hex.lstrip("#")
-    o = overlay_hex.lstrip("#")
-    if len(b) == 3:
-        br, bg, bb = (int(b[i] * 2, 16) for i in range(3))
-    else:
-        br, bg, bb = (int(b[i : i + 2], 16) for i in (0, 2, 4))
-    if len(o) == 3:
-        or_, og, ob = (int(o[i] * 2, 16) for i in range(3))
-    else:
-        or_, og, ob = (int(o[i : i + 2], 16) for i in (0, 2, 4))
-
-    a = max(0.0, min(1.0, alpha))
-    rr = int(round(br * (1 - a) + or_ * a))
-    rg = int(round(bg * (1 - a) + og * a))
-    rb = int(round(bb * (1 - a) + ob * a))
-    return f"#{rr:02x}{rg:02x}{rb:02x}"
 
 
 def make_sparkline(values: list[float], width: int = 90, height: int = 16) -> str:
@@ -723,11 +680,11 @@ def wave_detail(wave_id: int):
             height_text = getattr(height_td, "content", str(height_td))
             height_style = ""
         wave_inner = ft.Div(
-            ft.Span(height_text, style=height_style),
+            ft.Span(height_text),
             wave_arrow,
             style="display:flex;align-items:center;justify-content:center;gap:16px;",
         )
-        combined_wave_td = ft.Td(wave_inner, cls="col-wave")
+        combined_wave_td = ft.Td(wave_inner, cls="col-wave", style=height_style)
 
         rows.append(
             ft.Tr(

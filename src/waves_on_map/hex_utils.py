@@ -10,6 +10,33 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 
 
+def blend_hex(base_hex: str, overlay_hex: str, alpha: float) -> str:
+    """Blend overlay_hex onto base_hex with given alpha (0..1) and return hex.
+
+    Uses simple linear interpolation per channel and returns a 6-char hex.
+    """
+    if not base_hex:
+        base_hex = "#000000"
+    if not overlay_hex:
+        overlay_hex = "#000000"
+    b = base_hex.lstrip("#")
+    o = overlay_hex.lstrip("#")
+    if len(b) == 3:
+        br, bg, bb = (int(b[i] * 2, 16) for i in range(3))
+    else:
+        br, bg, bb = (int(b[i : i + 2], 16) for i in (0, 2, 4))
+    if len(o) == 3:
+        or_, og, ob = (int(o[i] * 2, 16) for i in range(3))
+    else:
+        or_, og, ob = (int(o[i : i + 2], 16) for i in (0, 2, 4))
+
+    a = max(0.0, min(1.0, alpha))
+    rr = int(round(br * (1 - a) + or_ * a))
+    rg = int(round(bg * (1 - a) + og * a))
+    rb = int(round(bb * (1 - a) + ob * a))
+    return f"#{rr:02x}{rg:02x}{rb:02x}"
+
+
 def value_to_hex(x: float, a: float, b: float, cmap_name: str = "viridis") -> str:
     """Map scalar x in [a,b] to a HEX color using the named matplotlib colormap.
 
