@@ -3,6 +3,7 @@ import base64
 import logging
 import os
 import shutil
+from datetime import timezone
 from pathlib import Path
 from textwrap import dedent
 from typing import cast
@@ -10,6 +11,7 @@ from typing import cast
 import fasthtml.common as ft
 import folium
 
+from date_utils import OSLO_TZ, to_oslo
 from wave_alert import CFG
 from wave_alert import run as wave_alert_run
 
@@ -79,15 +81,15 @@ except Exception as e:  # pragma: no cover
 def build_metrics_badge(wind_sup: str, wave_sub: str) -> str:
     return dedent(
         f"""
-                <span style='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);display:flex;flex-direction:column;gap:6px;width:40px;pointer-events:none;z-index:2;'>
-                    <span style='display:flex;width:40px;align-items:center;justify-content:space-between;font-size:0.9rem;font-weight:700;color:#d4f4ff;letter-spacing:-.3px;text-shadow:0 0 4px rgba(0,0,0,.85);'>
-                        <span>💨</span><span style='margin-left:auto;'>{wind_sup}</span>
-                    </span>
-                    <span style='display:flex;width:40px;align-items:center;justify-content:space-between;font-size:0.85rem;font-weight:600;color:#9edbff;letter-spacing:-.3px;text-shadow:0 0 4px rgba(0,0,0,.85);'>
-                        <span>🌊</span><span style='margin-left:auto;'>{wave_sub}</span>
-                    </span>
-                </span>
-                """.strip()
+        <span style='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);display:flex;flex-direction:column;gap:6px;width:40px;pointer-events:none;z-index:2;'>
+            <span style='display:flex;width:40px;align-items:center;justify-content:space-between;font-size:0.9rem;font-weight:700;color:#d4f4ff;letter-spacing:-.3px;text-shadow:0 0 4px rgba(0,0,0,.85);'>
+                <span>💨</span><span style='margin-left:auto;'>{wind_sup}</span>
+            </span>
+            <span style='display:flex;width:40px;align-items:center;justify-content:space-between;font-size:0.85rem;font-weight:600;color:#9edbff;letter-spacing:-.3px;text-shadow:0 0 4px rgba(0,0,0,.85);'>
+                <span>🌊</span><span style='margin-left:auto;'>{wave_sub}</span>
+            </span>
+        </span>
+        """.strip()
     )
 
 
@@ -99,14 +101,14 @@ def build_icon_html(
     day_label = f"<div style='position:absolute;left:50%;bottom:2px;transform:translate(-50%,0);font-size:.55rem;font-weight:600;color:#ffd1d1;background:rgba(40,8,10,.85);padding:2px 5px 2px;border:1px solid #ff6d6d;border-radius:8px;line-height:1;letter-spacing:.4px;box-shadow:0 2px 5px -2px rgba(0,0,0,.65);font-family:system-ui,sans-serif;pointer-events:none;'>+{days_ahead}</div>"
     return dedent(
         f"""
-                <div style='position:relative;pointer-events:auto;font-family:system-ui,sans-serif;'>
-                    <div style='width:60px;height:60px;position:relative;padding:4px;background:#2a0e11;background:radial-gradient(circle at 42% 34%,rgba(255,120,120,.55),rgba(40,8,10,.94));border:2px solid #ff6d6d;border-radius:50%;box-shadow:0 3px 10px -4px rgba(0,0,0,.85),0 0 0 1px rgba(255,120,120,.45);overflow:hidden;box-sizing:border-box;'>
-                        <div style='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate({rotation}deg);font-size:30px;line-height:1;color:#ff4d4d;filter:drop-shadow(0 0 5px rgba(0,0,0,.95));font-weight:800;text-shadow:0 0 7px rgba(255,120,120,.65);'>↑</div>
-                        {metrics_badge}
-                        {day_label}
-                    </div>
-                </div>
-                """.strip()
+        <div style='position:relative;pointer-events:auto;font-family:system-ui,sans-serif;'>
+            <div style='width:60px;height:60px;position:relative;padding:4px;background:#2a0e11;background:radial-gradient(circle at 42% 34%,rgba(255,120,120,.55),rgba(40,8,10,.94));border:2px solid #ff6d6d;border-radius:50%;box-shadow:0 3px 10px -4px rgba(0,0,0,.85),0 0 0 1px rgba(255,120,120,.45);overflow:hidden;box-sizing:border-box;'>
+                <div style='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate({rotation}deg);font-size:30px;line-height:1;color:#ff4d4d;filter:drop-shadow(0 0 5px rgba(0,0,0,.95));font-weight:800;text-shadow:0 0 7px rgba(255,120,120,.65);'>↑</div>
+                {metrics_badge}
+                {day_label}
+            </div>
+        </div>
+        """.strip()
     )
 
 
@@ -126,7 +128,10 @@ if waves not in db.t:
     }
     wave_columns.update(dict(id=int, loc_id=int))
 
-    locs.create(dict(latitude=float, longitude=float, id=int, name=str), pk="id")
+    locs.create(
+        dict(latitude=float, longitude=float, id=int, name=str, extra_thresh=float),
+        pk="id",
+    )
     waves.create(
         wave_columns,
         pk="id",
@@ -152,8 +157,9 @@ def value_to_hex(x, a, b, cmap_name="viridis"):
 
 def insert_wave_data(m: folium.Map):
     if not locs.count:
-        loc = dict(latitude=59.8739721, longitude=10.7449325, id=1, name="Malmøya-nord")
-        locs.insert(loc)
+        from waves_on_map.init_locs import init_locs
+
+        locs.insert_all(init_locs)
 
     for loc in locs(limit=100):  # type: ignore
         lat = loc["latitude"]
@@ -199,7 +205,7 @@ def insert_wave_data(m: folium.Map):
         metrics_badge = build_metrics_badge(wind_sup, wave_sub)
         from datetime import datetime
 
-        days_ahead = (wd.time.date() - datetime.utcnow().date()).days
+        days_ahead = (to_oslo(wd.time).date() - datetime.now(OSLO_TZ).date()).days
         metrics_badge += f"<span style='position:absolute;left:50%;bottom:2px;transform:translate(-50%,0);font-size:0.9rem;font-weight:600;color:#ffd1d1;line-height:1;letter-spacing:.4px;pointer-events:none;'>+{days_ahead}</span>"
         add_clickable_arrow(
             m,
@@ -209,7 +215,7 @@ def insert_wave_data(m: folium.Map):
             popup_text=dedent(
                 f"""
                 {lat:.2f} {lon:.2f}<br>
-                {"<br>".join(f"{k}: {v}" for k, v in wd.compact.items())}<br>
+                {"<br>".join(f"{k}: {v}" for k, v in wd.local_compact.items())}<br>
                 <a href='/{wave_id}' style='color:#66b3ff;text-decoration:underline;'>Details ➜</a>
                 """.strip()
             ),
@@ -384,7 +390,13 @@ def post(data: dict):
         max_id = locs.count
         next_id = max_id + 1
 
-        loc = dict(latitude=latitude, longitude=longitude, name=name, id=next_id)
+        loc = dict(
+            latitude=latitude,
+            longitude=longitude,
+            name=name,
+            id=next_id,
+            extra_thresh=0.0,
+        )
         locs.insert(loc)
 
         # Build marker payload for immediate client insertion
@@ -399,9 +411,7 @@ def post(data: dict):
                 if f_max.wind_speed == f_max.wind_speed
                 else "?"
             )
-            wave_sub = (
-                str(int(round(max_wave_h * 10))) if max_wave_h == max_wave_h else "?"
-            )
+            wave_sub = str(max_wave_h)
 
             # Store wave data in database to get a wave_id for the Details link
             wave_id = waves.count + 1
@@ -422,7 +432,7 @@ def post(data: dict):
             rotation = (180 + wd.sea_surface_wave_from_direction) % 360
             from datetime import datetime
 
-            days_ahead = (wd.time.date() - datetime.utcnow().date()).days
+            days_ahead = (to_oslo(wd.time).date() - datetime.now(OSLO_TZ).date()).days
             icon_html = build_icon_html(rotation, metrics_badge, days_ahead)
             popup_html = dedent(
                 f"""
@@ -568,7 +578,7 @@ def wave_detail(wave_id: int):
         wm = find_weather_match(wv.time)
         rows.append(
             ft.Tr(
-                ft.Td(wv.time.strftime("%a %-d %b %H:%M")),
+                ft.Td(to_oslo(wv.time).strftime("%a %-d %b %H:%M")),
                 ft.Td(f"{wv.sea_surface_wave_height:.2f}"),
                 ft.Td(wave_arrow_cell(wv.sea_surface_wave_from_direction, "from")),
                 ft.Td(wave_arrow_cell(wv.sea_water_to_direction, "to")),
@@ -593,7 +603,7 @@ def wave_detail(wave_id: int):
         wm = weather_list[i]
         rows.append(
             ft.Tr(
-                ft.Td(wm.time.strftime("%a %-d %b %H:%M")),
+                ft.Td(to_oslo(wm.time).strftime("%a %-d %b %H:%M")),
                 ft.Td("-"),
                 ft.Td("-"),
                 ft.Td("-"),

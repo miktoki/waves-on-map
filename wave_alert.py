@@ -28,9 +28,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
-from typing import List, Tuple
 from zoneinfo import ZoneInfo
 
+from date_utils import TIME_TZ_LABEL, to_oslo
 from waves_on_map.fetch_data import fetch_forecast, fetch_waves
 
 
@@ -156,9 +156,7 @@ CFG = load_config()
 WAVE_THRESHOLD = float(CFG.get("wave_threshold", 0.5))
 OPENING_HOURS_SPEC = CFG.get("opening_hours", "")
 IS_OPEN: Callable[[datetime], bool] = _parse_opening_hours(OPENING_HOURS_SPEC)
-UTC = timezone.utc
-TIME_TZ_LABEL = "Europe/Oslo"
-OSLO_TZ = ZoneInfo(TIME_TZ_LABEL)
+
 
 DB_PATH = Path("data/weather.db")
 
@@ -185,17 +183,25 @@ class WeatherRow:
     symbol: str | None
 
 
-def load_locations(limit: int | None = None) -> List[Tuple[int, float, float, str]]:
+def load_locations(
+    limit: int | None = None,
+) -> list[tuple[int, float, float, str, float]]:
     if not DB_PATH.exists():
         raise SystemExit(f"DB missing at {DB_PATH}")
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("SELECT id, latitude, longitude, name FROM locations ORDER BY id ASC")
+    cur.execute(
+        "SELECT id, latitude, longitude, name, extra_thresh FROM locations ORDER BY id ASC"
+    )
     rows = cur.fetchall()
+    if not rows:
+        from waves_on_map.init_locs import init_locs_values
+
+        rows = init_locs_values
     conn.close()
     if limit is not None:
         rows = rows[:limit]
-    return [(r[0], float(r[1]), float(r[2]), r[3]) for r in rows]
+    return [(int(r[0]), float(r[1]), float(r[2]), r[3], float(r[4])) for r in rows]
 
 
 def window_indices(center_idx: int, total: int, radius: int) -> range:
@@ -214,12 +220,6 @@ def nearest_weather(weather_list, target_time):
 
 def fmt_precip(val: float) -> str:
     return "-" if val != val else f"{val:.1f}"  # NaN check
-
-
-def to_oslo(dt):
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(OSLO_TZ)
 
 
 def build_combined_table(wave_objs, weather_map) -> tuple[str, str]:
@@ -332,7 +332,9 @@ def send_email(subject: str, text_body: str, html_body: str | None = None):
     print("[alert] Email sent.")
 
 
-def process_location(loc_id: int, lat: float, lon: float, name: str):
+def process_location(
+    loc_id: int, lat: float, lon: float, name: str, extra_thresh: float
+):
     """Return aggregated exceedance data for a location or None if no exceedances."""
     waves_info = fetch_waves(lat, lon)
     weather_info = fetch_forecast(lat, lon)
@@ -342,7 +344,8 @@ def process_location(loc_id: int, lat: float, lon: float, name: str):
     exceed_indices = [
         i
         for i, w in enumerate(wave_list)
-        if IS_OPEN(to_oslo(w.time)) and w.sea_surface_wave_height >= WAVE_THRESHOLD  # type: ignore
+        if IS_OPEN(to_oslo(w.time))
+        and w.sea_surface_wave_height >= WAVE_THRESHOLD + extra_thresh  # type: ignore
     ]
 
     if not exceed_indices:
@@ -383,10 +386,10 @@ def run(limit: int | None = None):
         return
     aggregates = []
     total_exceed = 0
-    for loc_id, lat, lon, name in locs:
+    for loc_id, lat, lon, name, extra_thresh in locs:
         print(f"[alert] Processing {name} ({lat:.3f},{lon:.3f})")
         try:
-            agg = process_location(loc_id, lat, lon, name)
+            agg = process_location(loc_id, lat, lon, name, extra_thresh)
             if agg:
                 aggregates.append(agg)
                 total_exceed += agg["exceed_count"]

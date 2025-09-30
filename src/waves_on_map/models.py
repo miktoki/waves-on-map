@@ -1,10 +1,14 @@
 import math
+import sys
 from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, model_validator
 
-## Oceanforecast - Ocean forecasts for points at sea in Northwestern Europe
+from date_utils import to_oslo
+
+############################################################
+# Oceanforecast - Ocean forecasts for points at sea in Northwestern Europe
 # Delivers wave and sea forecast in standard MET Forecast GeoJSON format.
 
 # The forecast is based on multiple wave and sea models. For more information on models and parameters, see the Oceanforecast data model documentation.
@@ -16,6 +20,7 @@ from pydantic import BaseModel, model_validator
 
 # In the 2.0 JSON version, this is now changed to the more common meteorological convention for waves, while currents still use oceanographic convention. This is indicated in the variable names, sea_surface_wave_from_direction and sea_water_to_direction.
 
+############################################################
 # Locationforecast - Weather forecast for a specified place
 # DESCRIPTION
 
@@ -59,11 +64,14 @@ from pydantic import BaseModel, model_validator
 
 # UV index
 # The new format also includes UV radiation forecasts per location, to replace the old graphical UVforecast product. For those wanting UV maps these can be downloaded directly from CAMS.
+############################################################
 
 
 def fromisoformat_z(dt_str: str) -> datetime:
     """Parse ISO 8601 datetime string ending in 'Z'"""
     # this is not necessary in Python 3.11+
+    if sys.version_info >= (3, 11):
+        return datetime.fromisoformat(dt_str)
     if dt_str.endswith("Z"):
         return datetime.fromisoformat(f"{dt_str[:-1]}+00:00")
     return datetime.fromisoformat(dt_str)
@@ -187,6 +195,12 @@ class WaveData(BaseModel):
             for key, value in self.model_dump().items()
         }
 
+    @property
+    def local_compact(self):
+        ret = self.compact
+        ret["time"] = to_oslo(self.time)
+        return ret
+
 
 class WeatherProps(BaseModel):
     meta: WeatherMeta
@@ -206,9 +220,9 @@ class WeatherInfo(BaseModel):
     def meta(self):
         return self.properties.meta
 
-    @property
-    def sample_time(self):
-        return [ts.time for ts in self.properties.timeseries]
+    # @property
+    # def sample_time(self):
+    #     return [ts.time for ts in self.properties.timeseries]
 
 
 class WaveProps(WeatherProps):
@@ -229,6 +243,6 @@ class WaveInfo(BaseModel):
     def meta(self):
         return self.properties.meta
 
-    @property
-    def sample_time(self):
-        return [ts.time for ts in self.properties.timeseries]
+    # @property
+    # def sample_time(self):
+    #     return [ts.time for ts in self.properties.timeseries]

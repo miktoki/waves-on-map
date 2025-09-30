@@ -89,4 +89,4 @@ if __name__ == "__main__":
     lon = 10.7449325
     wi = fetch_forecast(lat, lon)
 
-    print(wi.sample_time)
+    # print(wi.sample_time)
