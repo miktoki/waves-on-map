@@ -267,19 +267,19 @@ class WeatherRow:
 def load_locations(
     limit: int | None = None,
 ) -> list[tuple[int, float, float, str, float]]:
-    if not DB_PATH.exists():
+    if DB_PATH.exists():
         raise SystemExit(f"DB missing at {DB_PATH}")
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT id, latitude, longitude, name, extra_thresh FROM locations ORDER BY id ASC"
-    )
-    rows = cur.fetchall()
-    if not rows:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, latitude, longitude, name, extra_thresh FROM locations ORDER BY id ASC"
+        )
+        rows = cur.fetchall()
+        conn.close()
+    else:
         from waves_on_map.init_locs import init_locs_values
 
         rows = init_locs_values
-    conn.close()
     if limit is not None:
         rows = rows[:limit]
     return [(int(r[0]), float(r[1]), float(r[2]), r[3], float(r[4])) for r in rows]
