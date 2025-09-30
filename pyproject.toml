@@ -28,4 +28,5 @@ module-name = "waves_on_map"
 [dependency-groups]
 dev = [
     "pip-tools>=7.5.0",
+    "ruff>=0.13.2",
 ]

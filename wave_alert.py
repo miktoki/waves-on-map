@@ -19,6 +19,7 @@ Usage:
 
 from __future__ import annotations
 
+import datetime as _dt
 import html as _html
 import os
 import smtplib
@@ -83,6 +84,56 @@ def _parse_opening_hours(spec: str) -> Callable[[datetime], bool]:
 
     rule_sep = [r.strip() for r in spec.split(";") if r.strip()]
     time_pat = re.compile(r"(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})")
+    # Public-holiday specific ranges (applies to calendar dates that are public holidays)
+    ph_ranges: list[tuple[int, int]] = []
+
+    def easter_sunday(year: int) -> _dt.date:
+        """Return Easter Sunday date for given year (Anonymous Gregorian algorithm)."""
+        a = year % 19
+        b = year // 100
+        c = year % 100
+        d = b // 4
+        e = b % 4
+        f = (b + 8) // 25
+        g = (b - f + 1) // 3
+        h = (19 * a + b - d - g + 15) % 30
+        i = c // 4
+        k = c % 4
+        L = (32 + 2 * e + 2 * i - h - k) % 7
+        m = (a + 11 * h + 22 * L) // 451
+        month = (h + L - 7 * m + 114) // 31
+        day = ((h + L - 7 * m + 114) % 31) + 1
+        return _dt.date(year, month, day)
+
+    def is_norwegian_public_holiday(d: _dt.date) -> bool:
+        """Return True if date `d` is a Norwegian public holiday.
+
+        This includes fixed-date holidays and the common movable Christian
+        holidays derived from Easter.
+        """
+        y = d.year
+        eas = easter_sunday(y)
+        eas_dt = _dt.date(y, eas.month, eas.day)
+        days = _dt.timedelta(days=1)
+        # fmt: off
+        holidays = {
+            eas_dt,               # Easter Sunday
+            eas_dt - 3 * days,    # Maundy Thursday
+            eas_dt - 2 * days,    # Good Friday
+            eas_dt + 1 * days,    # Easter Monday
+            eas_dt + 39 * days,   # Ascension Day
+            eas_dt + 49 * days,   # Pentecost (Whit) Sunday
+            eas_dt + 50 * days,   # Pentecost Monday
+            _dt.date(y, 1, 1),    # New Year's Day
+            _dt.date(y, 5, 1),    # Labor Day
+            _dt.date(y, 5, 17),   # Constitution Day
+            _dt.date(y, 12, 25),  # Christmas Day
+            _dt.date(y, 12, 26),  # Boxing Day
+        }
+        # fmt: on
+
+        return d in holidays
+
     for rule in rule_sep:
         # Split day part and times
         parts = rule.split()
@@ -95,10 +146,16 @@ def _parse_opening_hours(spec: str) -> Callable[[datetime], bool]:
         else:
             day_tokens = parts[0].split(",")
             time_tokens = parts[1:] if len(parts) > 1 else []
+        ph_in_rule = False
         # Expand days
         days: list[int] = []
         for tok in day_tokens:
             tok = tok.strip()
+            if not tok:
+                continue
+            if tok == "PH":
+                ph_in_rule = True
+                continue
             if tok == "ALL":
                 days = list(range(7))
                 break
@@ -114,10 +171,12 @@ def _parse_opening_hours(spec: str) -> Callable[[datetime], bool]:
                 days.append(DAY_IDX[tok])
         if not days:
             days = list(range(7))  # fallback
-        # If 'off' present => clear entries for these days
+        # If 'off' present => clear entries for these days (and for PH if present)
         if any(t.lower() == "off" for t in time_tokens):
             for d in days:
                 days_map[d] = []
+            if ph_in_rule:
+                ph_ranges = []
             continue
         # Parse time ranges
         # Join remaining tokens with comma to allow both space and comma separation
@@ -129,6 +188,8 @@ def _parse_opening_hours(spec: str) -> Callable[[datetime], bool]:
             if 0 <= start < 24 * 60 and 0 <= end <= 24 * 60 and start < end:
                 for d in days:
                     days_map[d].append((start, end))
+                if ph_in_rule:
+                    ph_ranges.append((start, end))
     # Normalize (merge overlapping) - simple sort
     for d in days_map:
         rngs = sorted(days_map[d])
@@ -139,13 +200,34 @@ def _parse_opening_hours(spec: str) -> Callable[[datetime], bool]:
             else:
                 merged[-1] = (merged[-1][0], max(merged[-1][1], e))
         days_map[d] = merged
+    # Normalize PH ranges as well
+    rngs = sorted(ph_ranges)
+    merged: list[tuple[int, int]] = []
+    for s, e in rngs:
+        if not merged or s > merged[-1][1]:
+            merged.append((s, e))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+    ph_ranges = merged
 
     def is_open(dt):
+        import datetime as _dt
+
         day = dt.weekday()
         minute = dt.hour * 60 + dt.minute
+        # Check regular weekday rules
         for s, e in days_map[day]:
             if s <= minute < e:
                 return True
+        # Check public holidays
+        try:
+            d = dt.date()
+        except Exception:
+            d = _dt.date(dt.year, dt.month, dt.day)
+        if ph_ranges and is_norwegian_public_holiday(d):
+            for s, e in ph_ranges:
+                if s <= minute < e:
+                    return True
         return False
 
     return is_open

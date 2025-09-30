@@ -3,6 +3,7 @@ import base64
 import logging
 import os
 import shutil
+import threading
 from pathlib import Path
 from textwrap import dedent
 from typing import cast
@@ -16,6 +17,11 @@ from wave_alert import run as wave_alert_run
 from waves_on_map.date_utils import OSLO_TZ, to_oslo
 
 LOG_LEVEL = os.getenv("APP_LOG_LEVEL", "INFO").upper()
+READONLY_DEPLOYMENT = os.environ.get("READONLY_DEPLOYMENT", "").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 logger = logging.getLogger("app_log")
 if not logger.handlers:
     _handler = logging.StreamHandler()
@@ -23,13 +29,6 @@ if not logger.handlers:
         logging.Formatter("[%(asctime)s] %(levelname)s %(name)s: %(message)s")
     )
     logger.addHandler(_handler)
-# --- Runtime env hardening for optional read-only deployments ---------------
-# Enable by setting environment variable READONLY_DEPLOYMENT to one of: 1, true, yes.
-READONLY_DEPLOYMENT = os.environ.get("READONLY_DEPLOYMENT", "").lower() in {
-    "1",
-    "true",
-    "yes",
-}
 logger.info("App starting, READONLY_DEPLOYMENT=%s", READONLY_DEPLOYMENT)
 if READONLY_DEPLOYMENT:
     # Some hosting platforms mount the app directory read-only; only /tmp is writable.
@@ -556,18 +555,15 @@ def wave_detail(wave_id: int):
 
     headers = [
         "Time",
-        "Wave H (m)",
-        "From",
-        "To",
-        "Water Temp (°C)",
-        "Current (m/s)",
+        "Wave H / Dir",
+        "Wind (m/s)",
         "Symbol",
         "Air Temp (°C)",
-        "Wind",
-        "Wind Dir",
+        "Water Temp (°C)",
+        "Precip (mm)",
         "Cloud %",
         "RH %",
-        "Precip (mm)",
+        "Current (m/s / to°)",
     ]
 
     def wave_arrow_cell(deg: float, label: str):
@@ -575,7 +571,7 @@ def wave_detail(wave_id: int):
             "↑",
             cls="arrow",
             style=(
-                f"display:inline-block;transform:rotate({(deg + 180) % 360}deg);"
+                f"display:inline-flex;align-items:center;margin-left:0;transform:rotate({(deg + 180) % 360}deg);"
                 "filter:drop-shadow(0 0 4px #000);font-weight:700;"
                 "font-size:20px;line-height:1;color:#f8fbff;"
             ),
@@ -601,11 +597,27 @@ def wave_detail(wave_id: int):
             "↑",
             cls="arrow",
             style=(
-                f"display:inline-block;transform:rotate({(deg + 180) % 360}deg);"
+                f"display:inline-flex;align-items:center;margin-left:18px;transform:rotate({(deg + 180) % 360}deg);"
                 "font-weight:700;filter:drop-shadow(0 0 4px #000);"
                 "font-size:20px;line-height:1;color:#f8fbff;"
             ),
             title=f"wind from {deg:.0f}°",
+        )
+
+    def current_arrow_cell(deg: float):
+        """Return an arrow pointing toward the current (oceanographic 'to' convention).
+
+        Do not add 180° — the provided angle is already a 'to' heading.
+        """
+        return ft.Span(
+            "↑",
+            cls="arrow",
+            style=(
+                f"display:inline-flex;align-items:center;margin-left:18px;transform:rotate({deg % 360}deg);"
+                "font-weight:700;filter:drop-shadow(0 0 4px #000);"
+                "font-size:20px;line-height:1;color:#f8fbff;"
+            ),
+            title=f"current to {deg:.0f}°",
         )
 
     # Index weather times for nearest match (within 45 min tolerance)
@@ -676,32 +688,73 @@ def wave_detail(wave_id: int):
                 height_td = ft.Td(
                     f"{wv.sea_surface_wave_height:.2f}",
                     style=f"background:{blended};color:{text_color};font-weight:700;",
+                    cls="col-wave",
                 )
             else:
                 # min value: do not set a background so it stays visually identical
                 # to other cells (inherits zebra row background)
-                height_td = ft.Td(f"{wv.sea_surface_wave_height:.2f}")
+                height_td = ft.Td(f"{wv.sea_surface_wave_height:.2f}", cls="col-wave")
         else:
-            height_td = ft.Td("-")
+            height_td = ft.Td("-", cls="col-wave")
+
+        # Build a wind cell that combines speed + arrow (compact)
+        if wm and getattr(wm, "wind_speed", None) == wm.wind_speed:
+            wind_cell = ft.Td(
+                ft.Span(
+                    f"{wm.wind_speed:.1f}", style="font-weight:700;margin-right:6px;"
+                ),
+                wind_arrow_cell(wm.wind_from_direction),
+                cls="col-wind",
+            )
+        else:
+            wind_cell = ft.Td("-", cls="col-wind")
+
+        # merged wave cell (height + direction arrow)
+        wave_arrow = wave_arrow_cell(wv.sea_surface_wave_from_direction, "from")
+        # height_td may carry style and class; extract text and style if present
+        try:
+            height_text = (
+                height_td.children[0]
+                if getattr(height_td, "children", None)
+                else str(height_td)
+            )
+            height_style = getattr(height_td, "attrs", {}).get("style", "")
+        except Exception:
+            height_text = getattr(height_td, "content", str(height_td))
+            height_style = ""
+        wave_inner = ft.Div(
+            ft.Span(height_text, style=height_style),
+            wave_arrow,
+            style="display:flex;align-items:center;justify-content:center;gap:16px;",
+        )
+        combined_wave_td = ft.Td(wave_inner, cls="col-wave")
 
         rows.append(
             ft.Tr(
-                ft.Td(to_oslo(wv.time).strftime("%a %-d %b %H:%M")),
-                height_td,
-                ft.Td(wave_arrow_cell(wv.sea_surface_wave_from_direction, "from")),
-                ft.Td(wave_arrow_cell(wv.sea_water_to_direction, "to")),
-                ft.Td(f"{wv.sea_water_temperature:.1f}"),
-                ft.Td(f"{wv.sea_water_speed:.2f}"),
-                ft.Td(weather_symbol_cell(wm.symbol_code) if wm else ft.Span("-")),
-                ft.Td(f"{wm.air_temperature:.1f}" if wm else "-"),
-                ft.Td(f"{wm.wind_speed:.1f}" if wm else "-"),
-                ft.Td(wind_arrow_cell(wm.wind_from_direction) if wm else ft.Span("-")),
-                ft.Td(f"{wm.cloud_area_fraction:.0f}" if wm else "-"),
-                ft.Td(f"{wm.relative_humidity:.0f}" if wm else "-"),
+                ft.Td(to_oslo(wv.time).strftime("%a %-d %b %H:%M"), cls="col-time"),
+                combined_wave_td,
+                wind_cell,
+                ft.Td(
+                    weather_symbol_cell(wm.symbol_code) if wm else ft.Span("-"),
+                    cls="col-symbol",
+                ),
+                ft.Td(f"{wm.air_temperature:.1f}" if wm else "-", cls="col-air-temp"),
+                ft.Td(f"{wv.sea_water_temperature:.1f}", cls="col-water-temp"),
                 ft.Td(
                     "–"
                     if (wm and wm.precipitation_amount != wm.precipitation_amount)
-                    else (f"{wm.precipitation_amount:.1f}" if wm else "-")
+                    else (f"{wm.precipitation_amount:.1f}" if wm else "-"),
+                    cls="col-precip",
+                ),
+                ft.Td(f"{wm.cloud_area_fraction:.0f}" if wm else "-", cls="col-cloud"),
+                ft.Td(f"{wm.relative_humidity:.0f}" if wm else "-", cls="col-rh"),
+                ft.Td(
+                    ft.Span(
+                        f"{wv.sea_water_speed:.2f}",
+                        style="font-weight:700;margin-right:6px;",
+                    ),
+                    current_arrow_cell(wv.sea_water_to_direction),
+                    cls="col-current",
                 ),
             )
         )
@@ -709,31 +762,52 @@ def wave_detail(wave_id: int):
     # Add remaining weather-only rows (time shown because no wave)
     for i in sorted(unused_weather):
         wm = weather_list[i]
+        # weather-only row: place fields according to new header order
+        wind_only = ft.Td(
+            ft.Span(f"{wm.wind_speed:.1f}", style="font-weight:700;margin-right:6px;"),
+            wind_arrow_cell(wm.wind_from_direction),
+            cls="col-wind",
+        )
+        empty_wave_td = ft.Td(ft.Span("-"), cls="col-wave")
         rows.append(
             ft.Tr(
-                ft.Td(to_oslo(wm.time).strftime("%a %-d %b %H:%M")),
-                ft.Td("-"),
-                ft.Td("-"),
-                ft.Td("-"),
-                ft.Td("-"),
-                ft.Td("-"),
-                ft.Td(weather_symbol_cell(wm.symbol_code)),
-                ft.Td(f"{wm.air_temperature:.1f}"),
-                ft.Td(f"{wm.wind_speed:.1f}"),
-                ft.Td(wind_arrow_cell(wm.wind_from_direction)),
-                ft.Td(f"{wm.cloud_area_fraction:.0f}"),
-                ft.Td(f"{wm.relative_humidity:.0f}"),
+                ft.Td(to_oslo(wm.time).strftime("%a %-d %b %H:%M"), cls="col-time"),
+                empty_wave_td,
+                wind_only,
+                ft.Td(weather_symbol_cell(wm.symbol_code), cls="col-symbol"),
+                ft.Td(f"{wm.air_temperature:.1f}", cls="col-air-temp"),
+                ft.Td("-", cls="col-water-temp"),
                 ft.Td(
                     "–"
                     if wm.precipitation_amount != wm.precipitation_amount
-                    else f"{wm.precipitation_amount:.1f}"
+                    else f"{wm.precipitation_amount:.1f}",
+                    cls="col-precip",
                 ),
+                ft.Td(f"{wm.cloud_area_fraction:.0f}", cls="col-cloud"),
+                ft.Td(f"{wm.relative_humidity:.0f}", cls="col-rh"),
+                ft.Td("-", cls="col-current"),
             )
         )
 
     # Final combined table (waves + matched weather + leftover weather-only rows)
+    # Attach classes to header cells so CSS can target columns robustly
+    header_classes = [
+        "col-time",
+        "col-wave",
+        "col-wind",
+        "col-symbol",
+        "col-air-temp",
+        "col-water-temp",
+        "col-precip",
+        "col-cloud",
+        "col-rh",
+        "col-current",
+    ]
+    thead = ft.Thead(
+        ft.Tr(*[ft.Th(h, cls=header_classes[i]) for i, h in enumerate(headers)])
+    )
     combined_table = ft.Table(
-        ft.Thead(ft.Tr(*(ft.Th(h) for h in headers))),
+        thead,
         ft.Tbody(*rows),
         cls="waves-table combined",
     )
@@ -742,14 +816,38 @@ def wave_detail(wave_id: int):
         """
         .waves-table.combined { border-collapse:separate; }
         .waves-table.combined th { font-size:.70rem; }
-        .waves-table.combined td { font-size:.83rem; }
-        .waves-table.combined td:nth-child(3),
-        .waves-table.combined td:nth-child(4),
-        .waves-table.combined td:nth-child(10) { text-align:center; width:48px; }
-        .waves-table.combined td .arrow { font-size:20px; }
+    .waves-table.combined td { font-size:.83rem; padding:6px 8px; }
+        /* Column sizing for reordered layout (1-based index matching headers)
+           1 Time, 2 Wave H, 3 Wave Dir, 4 Wind, 5 Symbol, 6 Air Temp,
+           7 Water Temp, 8 Precip, 9 Cloud, 10 RH, 11 Current, 12 Water To */
+        /* Column widths by class */
+        .waves-table.combined td.col-time, .waves-table.combined th.col-time { width:140px; text-align:left; }
+    /* reuse centering for all numeric+arrow columns */
+    .waves-table.combined td.col-wave, .waves-table.combined th.col-wave,
+    .waves-table.combined td.col-wind, .waves-table.combined th.col-wind,
+    .waves-table.combined td.col-current, .waves-table.combined th.col-current { text-align:center; }
+    .waves-table.combined td.col-wave, .waves-table.combined th.col-wave { width:98px; font-weight:700; }
+        .waves-table.combined td.col-wind, .waves-table.combined th.col-wind { width:100px; text-align:center; }
+        .waves-table.combined td.col-symbol, .waves-table.combined th.col-symbol { width:56px; text-align:center; }
+        .waves-table.combined td.col-air-temp, .waves-table.combined th.col-air-temp,
+        .waves-table.combined td.col-water-temp, .waves-table.combined th.col-water-temp { width:72px; text-align:center; }
+        .waves-table.combined td.col-precip, .waves-table.combined th.col-precip,
+        .waves-table.combined td.col-cloud, .waves-table.combined th.col-cloud { width:60px; text-align:center; }
+    .waves-table.combined td.col-rh, .waves-table.combined th.col-rh { width:72px; text-align:center; }
+    .waves-table.combined td.col-current, .waves-table.combined th.col-current { width:96px; text-align:center; }
+
+        /* Responsive: hide less-important columns on smaller screens (RH, Current, Water To)
+           for cleaner view; hide both headers and cells. */
         @media (max-width:880px){
             .waves-table.combined td { font-size:.74rem; }
-            .waves-table.combined td .arrow { font-size:18px; }
+            .waves-table.combined th.col-rh, .waves-table.combined td.col-rh,
+            .waves-table.combined th.col-current, .waves-table.combined td.col-current { display:none; }
+            .waves-table.combined td .arrow { font-size:20px; }
+            .waves-table.combined td > .arrow, .waves-table.combined td .arrow { display:inline-flex; align-items:center; vertical-align:middle; }
+            /* Wave column uses internal gap for spacing; remove extra left margin there */
+            .waves-table.combined td.col-wave .arrow { margin-left:0; }
+            /* Wind and current columns get explicit spacing between number and arrow */
+            .waves-table.combined td.col-wind .arrow, .waves-table.combined td.col-current .arrow { margin-left:18px; }
         }
         """
     )
