@@ -3,17 +3,17 @@ import base64
 import logging
 import os
 import shutil
-from datetime import timezone
 from pathlib import Path
 from textwrap import dedent
 from typing import cast
+from urllib.parse import quote
 
 import fasthtml.common as ft
 import folium
 
-from date_utils import OSLO_TZ, to_oslo
 from wave_alert import CFG
 from wave_alert import run as wave_alert_run
+from waves_on_map.date_utils import OSLO_TZ, to_oslo
 
 LOG_LEVEL = os.getenv("APP_LOG_LEVEL", "INFO").upper()
 logger = logging.getLogger("app_log")
@@ -47,13 +47,14 @@ import sqlite_minutils  # noqa: E402
 from bs4 import BeautifulSoup  # noqa: E402
 from fasthtml.common import Div, Meta  # noqa: F401,E402
 
-from waves_on_map.assets import (  # noqa: E402
+from waves_on_map.fetch_data import fetch_forecast, fetch_waves  # noqa: E402
+from waves_on_map.hex_utils import hex_luminance  # noqa: E402
+from waves_on_map.html_assets import (  # noqa: E402
     FAVICON_DATA_URL,
     MAP_DARK_CSS,
     MAP_RIGHT_CLICK_SCRIPT,
     WAVE_DETAIL_DARK_CSS,
 )
-from waves_on_map.fetch_data import fetch_forecast, fetch_waves  # noqa: E402
 from waves_on_map.map import add_clickable_arrow, get_map  # noqa: E402
 from waves_on_map.models import WaveData  # noqa: E402
 
@@ -153,6 +154,59 @@ def value_to_hex(x, a, b, cmap_name="viridis"):
 
     # Convert to HEX
     return mcolors.rgb2hex(rgb)
+
+
+def blend_hex(base_hex: str, overlay_hex: str, alpha: float) -> str:
+    """Blend overlay_hex onto base_hex with given alpha (0..1) and return hex.
+
+    Uses simple linear interpolation per channel and returns a 6-char hex.
+    """
+    if not base_hex:
+        base_hex = "#000000"
+    if not overlay_hex:
+        overlay_hex = "#000000"
+    b = base_hex.lstrip("#")
+    o = overlay_hex.lstrip("#")
+    if len(b) == 3:
+        br, bg, bb = (int(b[i] * 2, 16) for i in range(3))
+    else:
+        br, bg, bb = (int(b[i : i + 2], 16) for i in (0, 2, 4))
+    if len(o) == 3:
+        or_, og, ob = (int(o[i] * 2, 16) for i in range(3))
+    else:
+        or_, og, ob = (int(o[i : i + 2], 16) for i in (0, 2, 4))
+
+    a = max(0.0, min(1.0, alpha))
+    rr = int(round(br * (1 - a) + or_ * a))
+    rg = int(round(bg * (1 - a) + og * a))
+    rb = int(round(bb * (1 - a) + ob * a))
+    return f"#{rr:02x}{rg:02x}{rb:02x}"
+
+
+def make_sparkline(values: list[float], width: int = 90, height: int = 16) -> str:
+    """Return a data URI containing a tiny SVG sparkline for the provided numeric values."""
+    if not values:
+        return ""
+    pts = values[:48]
+    w = width
+    h = height
+    minv = min(pts)
+    maxv = max(pts)
+    rng = maxv - minv if maxv != minv else 1.0
+    step = w / (len(pts) - 1) if len(pts) > 1 else w
+    points = []
+    for i, v in enumerate(pts):
+        x = i * step
+        y = h - 1 - ((v - minv) / rng) * (h - 2)
+        points.append(f"{x:.1f},{y:.1f}")
+    poly = " ".join(points)
+    stroke = "#66b3ff"
+    svg = (
+        f"<svg xmlns='http://www.w3.org/2000/svg' width='{w}' height='{h}' viewBox='0 0 {w} {h}'>"
+        f"<polyline fill='none' stroke='{stroke}' stroke-width='1.6' points='{poly}' stroke-linecap='round' stroke-linejoin='round'/>"
+        f"</svg>"
+    )
+    return f"data:image/svg+xml;utf8,{quote(svg)}"
 
 
 def insert_wave_data(m: folium.Map):
@@ -573,13 +627,67 @@ def wave_detail(wave_id: int):
             return weather_list[best_i]
         return None
 
+    # Compute min/max wave heights to map values to a sequential colormap
+    wave_heights = [
+        d.sea_surface_wave_height
+        for d in wi.data
+        if getattr(d, "sea_surface_wave_height", None)
+        == getattr(d, "sea_surface_wave_height", None)
+    ]
+    if wave_heights:
+        min_h = min(wave_heights)
+        max_h = max(wave_heights)
+    else:
+        min_h = 0.0
+        max_h = 1.0
+
     rows: list[ft.Tr] = []  # type: ignore
-    for wv in wi.data:
+    for i, wv in enumerate(wi.data):
         wm = find_weather_match(wv.time)
+        # Height cell with blended colormap background; ensure alpha==0 leaves
+        # the cell unstyled so it inherits the table row background.
+        if getattr(wv, "sea_surface_wave_height", None) == getattr(
+            wv, "sea_surface_wave_height", None
+        ):
+            # normalized position in [0,1]
+            if max_h == min_h:
+                norm = 0.0
+            else:
+                norm = (wv.sea_surface_wave_height - min_h) / (max_h - min_h)
+            norm = max(0.0, min(1.0, norm))
+
+            # smooth blend: blend colormap hex into the row background using
+            # alpha scaled from 0..0.12 by norm
+            overlay_hex = value_to_hex(
+                wv.sea_surface_wave_height, min_h, max_h, cmap_name="viridis_r"
+            )
+            alpha = 0.3 * norm
+            # determine row base color (zebra pattern matches CSS used below)
+            row_base = "#223649" if (i % 2 == 0) else "#274152"
+
+            if norm > 0.0:
+                blended = blend_hex(row_base, overlay_hex, alpha)
+                try:
+                    # decide text color based on the final blended color (not the overlay)
+                    lum = hex_luminance(blended)
+                    text_color = "#0a0a0a" if lum > 0.6 else "#ffffff"
+                except Exception:
+                    text_color = "#ffffff"
+                height_td = ft.Td(
+                    f"{wv.sea_surface_wave_height:.2f}",
+                    style=f"background:{blended};color:{text_color};font-weight:700;",
+                )
+            else:
+                # min value: do not set a background so it stays visually identical
+                # to other cells (inherits zebra row background)
+                height_td = ft.Td(f"{wv.sea_surface_wave_height:.2f}")
+        else:
+            height_td = ft.Td("-")
+
         rows.append(
             ft.Tr(
                 ft.Td(to_oslo(wv.time).strftime("%a %-d %b %H:%M")),
-                ft.Td(f"{wv.sea_surface_wave_height:.2f}"),
+                height_td,
                 ft.Td(wave_arrow_cell(wv.sea_surface_wave_from_direction, "from")),
                 ft.Td(wave_arrow_cell(wv.sea_water_to_direction, "to")),
                 ft.Td(f"{wv.sea_water_temperature:.1f}"),
@@ -654,9 +762,10 @@ def wave_detail(wave_id: int):
         .meta { color:#cfe9f7 !important; opacity:.95; }
         .meta span, .meta p { color:#cfe9f7 !important; }
         .grid { display:grid; gap:.85rem; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); margin:1.1rem 0 1.35rem; }
-        .grid .card { background:#13232d; border:1px solid #224054; border-radius:12px; padding:.65rem .7rem .55rem; box-shadow:0 2px 4px -2px rgba(0,0,0,.55),0 0 0 1px rgba(120,200,255,.08); }
-        .grid .card h3 { margin:0 0 .35rem; font-size:.62rem; text-transform:uppercase; letter-spacing:.55px; font-weight:600; color:#8fd1ff; opacity:.95; }
-        .grid .card p { margin:0; font-size:.95rem; font-weight:600; letter-spacing:.3px; color:#f4fbff; text-shadow:0 0 4px rgba(0,0,0,.55); }
+    .grid .card { position:relative; overflow:hidden; background:#13232d; border:1px solid #224054; border-radius:12px; padding:.65rem .7rem .55rem; box-shadow:0 2px 4px -2px rgba(0,0,0,.55),0 0 0 1px rgba(120,200,255,.04); }
+    .grid .card h3 { margin:0 0 .35rem; font-size:.62rem; text-transform:uppercase; letter-spacing:.55px; font-weight:600; color:#8fd1ff; opacity:.95; }
+    .grid .card p { margin:0; font-size:.95rem; font-weight:600; letter-spacing:.3px; color:#f4fbff; text-shadow:0 0 4px rgba(0,0,0,.55); }
+    .grid .card .sparkline { position:absolute; right:10px; bottom:8px; height:16px; width:90px; display:block; pointer-events:none; }
         h2, h1, h2 span, h2 strong { color:#e7f5ff !important; }
         h2 { letter-spacing:.5px; }
         a.back { color:#89d2ff !important; }
@@ -668,35 +777,152 @@ def wave_detail(wave_id: int):
             .grid { gap:.65rem; }
             .grid .card { padding:.55rem .55rem .5rem; }
             .grid .card p { font-size:.9rem; }
+            .grid .card .sparkline { right:8px; bottom:6px; height:14px; width:76px; }
         }
         """
     )
 
     latest = wi.data[0]
+
     summary_cards = ft.Div(
         ft.Div(
             ft.Div(
                 ft.H3("Wave Height"),
                 ft.P(f"{latest.sea_surface_wave_height:.2f} m"),
+                ft.Img(
+                    src=make_sparkline(
+                        [
+                            d.sea_surface_wave_height
+                            for d in wi.data[:48]
+                            if getattr(d, "sea_surface_wave_height", None)
+                            == getattr(d, "sea_surface_wave_height", None)
+                        ]
+                    ),
+                    alt="trend",
+                    cls="sparkline",
+                    width="90",
+                    height="16",
+                ),
                 cls="card",
             ),
             ft.Div(
                 ft.H3("Water Temp"),
                 ft.P(f"{latest.sea_water_temperature:.1f} °C"),
+                ft.Img(
+                    src=make_sparkline(
+                        [
+                            d.sea_water_temperature
+                            for d in wi.data[:48]
+                            if getattr(d, "sea_water_temperature", None)
+                            == getattr(d, "sea_water_temperature", None)
+                        ]
+                    ),
+                    alt="water temp trend",
+                    cls="sparkline",
+                    width="90",
+                    height="16",
+                ),
                 cls="card",
             ),
             ft.Div(
-                ft.H3("From Dir"),
-                ft.P(f"{latest.sea_surface_wave_from_direction:.0f}°"),
+                ft.H3("Wind"),
+                ft.P(
+                    f"{weather.data[0].wind_speed:.1f} m/s"
+                    if weather.data
+                    and getattr(weather.data[0], "wind_speed", None)
+                    == getattr(weather.data[0], "wind_speed", None)
+                    else "-"
+                ),
+                ft.Img(
+                    src=make_sparkline(
+                        [
+                            w.wind_speed
+                            for w in weather.data[:48]
+                            if getattr(w, "wind_speed", None)
+                            == getattr(w, "wind_speed", None)
+                        ]
+                    ),
+                    alt="wind trend",
+                    cls="sparkline",
+                    width="90",
+                    height="16",
+                ),
                 cls="card",
             ),
             ft.Div(
-                ft.H3("To Dir"),
-                ft.P(f"{latest.sea_water_to_direction:.0f}°"),
+                ft.H3("Precip"),
+                ft.P(
+                    f"{weather.data[0].precipitation_amount:.1f} mm"
+                    if weather.data
+                    and getattr(weather.data[0], "precipitation_amount", None)
+                    == getattr(weather.data[0], "precipitation_amount", None)
+                    else "-"
+                ),
+                ft.Img(
+                    src=make_sparkline(
+                        [
+                            w.precipitation_amount
+                            for w in weather.data[:48]
+                            if getattr(w, "precipitation_amount", None)
+                            == getattr(w, "precipitation_amount", None)
+                        ]
+                    ),
+                    alt="precipitation trend",
+                    cls="sparkline",
+                    width="90",
+                    height="16",
+                ),
                 cls="card",
             ),
             ft.Div(
-                ft.H3("Speed"), ft.P(f"{latest.sea_water_speed:.2f} m/s"), cls="card"
+                ft.H3("Air Temp"),
+                ft.P(
+                    f"{weather.data[0].air_temperature:.1f} °C"
+                    if weather.data
+                    and getattr(weather.data[0], "air_temperature", None)
+                    == getattr(weather.data[0], "air_temperature", None)
+                    else "-"
+                ),
+                ft.Img(
+                    src=make_sparkline(
+                        [
+                            w.air_temperature
+                            for w in weather.data[:48]
+                            if getattr(w, "air_temperature", None)
+                            == getattr(w, "air_temperature", None)
+                        ]
+                    ),
+                    alt="air temp trend",
+                    cls="sparkline",
+                    width="90",
+                    height="16",
+                ),
+                cls="card",
+            ),
+            ft.Div(
+                ft.H3("Cloud %"),
+                ft.P(
+                    f"{weather.data[0].cloud_area_fraction:.0f}"
+                    if weather.data
+                    and getattr(weather.data[0], "cloud_area_fraction", None)
+                    == getattr(weather.data[0], "cloud_area_fraction", None)
+                    else "-"
+                ),
+                ft.Img(
+                    src=make_sparkline(
+                        [
+                            w.cloud_area_fraction
+                            for w in weather.data[:48]
+                            if getattr(w, "cloud_area_fraction", None)
+                            == getattr(w, "cloud_area_fraction", None)
+                        ]
+                    ),
+                    alt="cloud coverage trend",
+                    cls="sparkline",
+                    width="90",
+                    height="16",
+                ),
+                cls="card",
             ),
             cls="grid",
         )

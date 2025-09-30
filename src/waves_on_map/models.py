@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, model_validator
 
-from date_utils import to_oslo
+from waves_on_map.date_utils import to_oslo
 
 ############################################################
 # Oceanforecast - Ocean forecasts for points at sea in Northwestern Europe

@@ -25,12 +25,11 @@ import smtplib
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
-from date_utils import TIME_TZ_LABEL, to_oslo
+from waves_on_map.date_utils import TIME_TZ_LABEL, to_oslo
 from waves_on_map.fetch_data import fetch_forecast, fetch_waves
 
 
